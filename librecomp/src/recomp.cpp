@@ -90,7 +90,9 @@ bool recomp::register_game(const recomp::GameEntry& entry) {
 }
 
 void recomp::mods::initialize_mods() {
+#ifndef __EMSCRIPTEN__
     N64Recomp::live_recompiler_init();
+#endif
     std::filesystem::create_directories(config_path / mods_directory);
     std::filesystem::create_directories(config_path / mod_config_directory);
     mod_context->set_mods_config_path(config_path / "mods.json");

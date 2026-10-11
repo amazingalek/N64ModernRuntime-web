@@ -63,5 +63,10 @@ endif()
 add_subdirectory(${PROJECT_SOURCE_DIR}/../thirdparty/miniz ${CMAKE_CURRENT_BINARY_DIR}/miniz)
 add_subdirectory(${PROJECT_SOURCE_DIR}/../N64Recomp ${CMAKE_CURRENT_BINARY_DIR}/N64Recomp EXCLUDE_FROM_ALL)
 
-target_link_libraries(librecomp PRIVATE ultramodern N64Recomp LiveRecomp)
+# WebAssembly can't generate code at runtime, so Emscripten builds have no live recompiler (mods that need it don't load).
+if (EMSCRIPTEN)
+    target_link_libraries(librecomp PRIVATE ultramodern N64Recomp)
+else()
+    target_link_libraries(librecomp PRIVATE ultramodern N64Recomp LiveRecomp)
+endif()
 target_link_libraries(librecomp PUBLIC miniz)

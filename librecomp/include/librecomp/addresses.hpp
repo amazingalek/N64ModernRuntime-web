@@ -9,7 +9,13 @@ namespace recomp {
     // 512GB (kseg0 size)
     constexpr size_t mem_size = 512ULL * 1024ULL * 1024ULL;
     // 4GB (the full address space)
+#ifdef __EMSCRIPTEN__
+    // A 32-bit address space can't reserve 4 GiB, and WebAssembly memory has no page protection to catch stray
+    // accesses with anyway.
+    constexpr size_t allocation_size = mem_size;
+#else
     constexpr size_t allocation_size = 4096ULL * 1024ULL * 1024ULL;
+#endif
     // We need a place in rdram to hold the PI handles, so pick an address in extended rdram
     constexpr int32_t cart_handle = 0x80800000;
     constexpr int32_t drive_handle = (int32_t)(cart_handle + sizeof(OSPiHandle));

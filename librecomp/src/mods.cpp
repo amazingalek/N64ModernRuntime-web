@@ -74,6 +74,9 @@ bool get_to_vec(const nlohmann::json& val, std::vector<T2>& out) {
 // MSVC/GCC/Clang ARM64
 #elif defined(__ARM_ARCH_ISA_A64)
 #   define IS_ARM64
+// WebAssembly: code can't be patched or generated at runtime.
+#elif defined(__wasm__)
+#   define IS_WASM
 #else
 #   error "Unsupported architecture!"
 #endif
@@ -480,6 +483,9 @@ recomp::mods::LiveRecompilerCodeHandle::LiveRecompilerCodeHandle(
     const N64Recomp::Context& context, const ModCodeHandleInputs& inputs,
     std::unordered_map<size_t, size_t>&& entry_func_hooks, std::unordered_map<size_t, size_t>&& return_func_hooks, std::vector<size_t>&& original_section_indices, bool regenerated)
 {
+#ifdef IS_WASM
+    is_good = false;
+#else
     if (!regenerated) {
        section_addresses = std::make_unique<int32_t[]>(context.sections.size());
     }
@@ -521,7 +527,11 @@ recomp::mods::LiveRecompilerCodeHandle::LiveRecompilerCodeHandle(
     // Generate the code.
     recompiler_output = std::make_unique<N64Recomp::LiveGeneratorOutput>(generator.finish());
     is_good = !errored && recompiler_output->good;
+#endif
 }
+
+// Without a live recompiler a handle is never good, so the functions below are never called.
+#ifndef IS_WASM
 
 void recomp::mods::LiveRecompilerCodeHandle::set_imported_function(size_t import_index, GenericFunction func) {
     std::visit(overloaded {
@@ -554,8 +564,30 @@ recomp::mods::CodeModLoadError recomp::mods::LiveRecompilerCodeHandle::populate_
 recomp::mods::GenericFunction recomp::mods::LiveRecompilerCodeHandle::get_function_handle(size_t func_index) {
     return GenericFunction{ recompiler_output->functions[func_index] };
 }
+#else
+void recomp::mods::LiveRecompilerCodeHandle::set_imported_function(size_t, GenericFunction) {}
+
+recomp::mods::CodeModLoadError recomp::mods::LiveRecompilerCodeHandle::populate_reference_symbols(const N64Recomp::Context&, std::string&) {
+    return CodeModLoadError::Good;
+}
+
+recomp::mods::GenericFunction recomp::mods::LiveRecompilerCodeHandle::get_function_handle(size_t) {
+    return GenericFunction{ static_cast<recomp_func_t*>(nullptr) };
+}
+
+// LiveRecomp, which generates these, isn't linked. Nothing creates one, but librecomp still names them.
+N64Recomp::LiveGeneratorOutput::~LiveGeneratorOutput() {}
+N64Recomp::ShimFunction::ShimFunction(recomp_func_ext_t*, uintptr_t) : code(nullptr), func(nullptr) {}
+N64Recomp::ShimFunction::~ShimFunction() {}
+#endif
 
 void patch_func(recomp_func_t* target_func, recomp::mods::GenericFunction replacement_func) {
+#if defined(IS_WASM)
+    // Unreachable: no mod code loads in WebAssembly (see LiveRecompilerCodeHandle), and its code can't be rewritten.
+    (void)target_func;
+    (void)replacement_func;
+    assert(false && "patch_func in WebAssembly");
+#else
     uint8_t* target_func_u8 = reinterpret_cast<uint8_t*>(target_func);
     size_t offset = 0;
 
@@ -590,6 +622,7 @@ void patch_func(recomp_func_t* target_func, recomp::mods::GenericFunction replac
 #endif
 
     protect(target_func_u8, old_flags);
+#endif
 }
 
 void unpatch_func(void* target_func, const recomp::mods::PatchData& data) {

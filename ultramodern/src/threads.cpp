@@ -144,6 +144,15 @@ void ultramodern::set_native_thread_name(const std::string& name) {
 }
 
 void ultramodern::set_native_thread_priority(ThreadPriority pri) {}
+#elif defined(__EMSCRIPTEN__)
+#include <emscripten/threading.h>
+
+void ultramodern::set_native_thread_name(const std::string& name) {
+    emscripten_set_thread_name(pthread_self(), name.c_str());
+}
+
+// Web workers have no priorities.
+void ultramodern::set_native_thread_priority(ThreadPriority pri) {}
 #endif
 
 void wait_for_resumed(RDRAM_ARG UltraThreadContext* thread_context) {
