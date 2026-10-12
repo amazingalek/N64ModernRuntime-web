@@ -3,7 +3,7 @@
 > [!WARNING]
 > **This is amazingalek/N64ModernRuntime-web, a fork, not
 > [N64ModernRuntime](https://github.com/N64Recomp/N64ModernRuntime).** It makes the runtime build with Emscripten, so
-> a recompiled game runs in a web page, for [recomp-web](https://github.com/amazingalek/recomp-web), and everything in
+> a recompiled game runs in a web page, for [N64Recomp-browser](https://github.com/amazingalek/N64Recomp-browser), and everything in
 > it past upstream's commits was written by AI (Claude). It is not made, endorsed or supported by the N64: Recompiled
 > developers, whose contributing guide bans AI-written code: nothing here is offered upstream, and please don't take
 > issues with this fork to them.

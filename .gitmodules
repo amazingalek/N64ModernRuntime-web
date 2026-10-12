@@ -7,7 +7,7 @@
 [submodule "N64Recomp"]
 	path = N64Recomp
 	url = https://github.com/amazingalek/N64Recomp-web
-	branch = web
+	branch = main
 [submodule "thirdparty/o1heap"]
 	path = thirdparty/o1heap
 	url = https://github.com/N64Recomp/o1heap
