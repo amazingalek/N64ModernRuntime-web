@@ -457,7 +457,9 @@ void recomp::mods::DynamicLibraryCodeHandle::set_imported_function(size_t import
     }, func);
 }
 
-recomp::mods::CodeModLoadError recomp::mods::DynamicLibraryCodeHandle::populate_reference_symbols(const N64Recomp::Context& context, std::string& error_param) {
+// Fills a mod's array of the base ROM's functions it calls, for code recompiled ahead of time (a DLL, or linked in).
+static recomp::mods::CodeModLoadError populate_reference_symbol_funcs(const N64Recomp::Context& context, recomp_func_t** reference_symbol_funcs, std::string& error_param) {
+    using namespace recomp::mods;
     size_t reference_symbol_index = 0;
     for (const auto& section : context.sections) {
         for (const auto& reloc : section.relocs) {
@@ -477,6 +479,28 @@ recomp::mods::CodeModLoadError recomp::mods::DynamicLibraryCodeHandle::populate_
         }
     }
     return CodeModLoadError::Good;
+}
+
+recomp::mods::CodeModLoadError recomp::mods::DynamicLibraryCodeHandle::populate_reference_symbols(const N64Recomp::Context& context, std::string& error_param) {
+    return populate_reference_symbol_funcs(context, reference_symbol_funcs, error_param);
+}
+
+recomp::mods::PrecompiledCodeHandle::PrecompiledCodeHandle(const recomp_precompiled_mod& code, const N64Recomp::Context& context, const ModCodeHandleInputs& inputs) : code(code) {
+    is_good = code.num_functions == context.functions.size();
+    *code.base_event_index = inputs.base_event_index;
+    *code.reference_section_addresses = inputs.reference_section_addresses;
+}
+
+void recomp::mods::PrecompiledCodeHandle::set_imported_function(size_t import_index, GenericFunction func) {
+    std::visit(overloaded {
+        [this, import_index](recomp_func_t* native_func) {
+            code.imported_funcs[import_index] = native_func;
+        }
+    }, func);
+}
+
+recomp::mods::CodeModLoadError recomp::mods::PrecompiledCodeHandle::populate_reference_symbols(const N64Recomp::Context& context, std::string& error_param) {
+    return populate_reference_symbol_funcs(context, code.reference_symbol_funcs, error_param);
 }
 
 recomp::mods::LiveRecompilerCodeHandle::LiveRecompilerCodeHandle(
@@ -575,18 +599,123 @@ recomp::mods::GenericFunction recomp::mods::LiveRecompilerCodeHandle::get_functi
     return GenericFunction{ static_cast<recomp_func_t*>(nullptr) };
 }
 
-// LiveRecomp, which generates these, isn't linked. Nothing creates one, but librecomp still names them.
+// LiveRecomp, which generates these, isn't linked. Nothing creates one, but librecomp still names it.
 N64Recomp::LiveGeneratorOutput::~LiveGeneratorOutput() {}
-N64Recomp::ShimFunction::ShimFunction(recomp_func_ext_t*, uintptr_t) : code(nullptr), func(nullptr) {}
-N64Recomp::ShimFunction::~ShimFunction() {}
+
+// A shim calls a function that takes a value (recomp_func_ext_t) from a call that passes none (recomp_func_t): the
+// config API given the calling mod's index, for one. LiveRecomp generates each one as code, so here they're the slots
+// of a fixed pool of functions, each of which calls what its slot holds. `code` points at the slot.
+namespace {
+    struct ShimSlot {
+        recomp_func_ext_t* func;
+        uintptr_t value;
+    };
+    constexpr size_t num_shim_slots = 1024;
+    ShimSlot shim_slots[num_shim_slots]{};
+    std::mutex shim_slots_mutex;
+
+    template <size_t index>
+    void shim_slot_func(uint8_t* rdram, recomp_context* ctx) {
+        shim_slots[index].func(rdram, ctx, shim_slots[index].value);
+    }
+
+    template <size_t... indices>
+    constexpr std::array<recomp_func_t*, sizeof...(indices)> make_shim_slot_funcs(std::index_sequence<indices...>) {
+        return { shim_slot_func<indices>... };
+    }
+    constexpr std::array<recomp_func_t*, num_shim_slots> shim_slot_funcs = make_shim_slot_funcs(std::make_index_sequence<num_shim_slots>{});
+}
+
+N64Recomp::ShimFunction::ShimFunction(recomp_func_ext_t* to_shim, uintptr_t value) : code(nullptr), func(nullptr) {
+    std::lock_guard lock{ shim_slots_mutex };
+    for (size_t i = 0; i < num_shim_slots; i++) {
+        if (shim_slots[i].func == nullptr) {
+            shim_slots[i] = ShimSlot{ to_shim, value };
+            code = &shim_slots[i];
+            func = shim_slot_funcs[i];
+            return;
+        }
+    }
+    assert(false && "Out of shim slots");
+}
+
+N64Recomp::ShimFunction::~ShimFunction() {
+    std::lock_guard lock{ shim_slots_mutex };
+    if (code != nullptr) {
+        static_cast<ShimSlot*>(code)->func = nullptr;
+    }
+}
+#endif
+
+#if defined(IS_WASM)
+// WebAssembly can't rewrite a function's code, so there a mod's replacement of a recompiled function (patch_func) and
+// the hooks the live recompiler would add to a copy of it are kept here, and every recompiled function asks at its entry
+// (RECOMP_FUNC_ENTRY in recomp.h): a byte per function table index, which is a function pointer's value, set for one
+// with a redirect, and what to run for it.
+extern "C" const uint8_t* recomp_redirected = nullptr;
+extern "C" uintptr_t recomp_redirected_count = 0;
+
+namespace {
+    struct Redirect {
+        recomp_func_t* replacement = nullptr;
+        size_t entry_hook = SIZE_MAX;
+        size_t return_hook = SIZE_MAX;
+    };
+    std::vector<uint8_t> redirected_funcs;
+    std::unordered_map<uintptr_t, Redirect> redirects;
+    // A hooked function that recomp_redirect has called, to run itself when its entry asks.
+    thread_local uintptr_t redirect_bypass = 0;
+
+    // Only while mods load, before the game's threads run.
+    Redirect& add_redirect(recomp_func_t* func) {
+        uintptr_t index = reinterpret_cast<uintptr_t>(func);
+        if (index >= redirected_funcs.size()) {
+            redirected_funcs.resize(index + 1);
+        }
+        redirected_funcs[index] = 1;
+        recomp_redirected = redirected_funcs.data();
+        recomp_redirected_count = redirected_funcs.size();
+        return redirects[index];
+    }
+
+    void reset_redirects() {
+        recomp_redirected_count = 0;
+        recomp_redirected = nullptr;
+        redirected_funcs.clear();
+        redirects.clear();
+    }
+}
+
+extern "C" int recomp_redirect(uint8_t* rdram, recomp_context* ctx, uintptr_t func) {
+    if (redirect_bypass == func) {
+        redirect_bypass = 0;
+        return 0;
+    }
+    auto find_it = redirects.find(func);
+    if (find_it == redirects.end()) {
+        return 0;
+    }
+    const Redirect& redirect = find_it->second;
+    if (redirect.entry_hook != SIZE_MAX) {
+        recomp::mods::run_hook(rdram, ctx, redirect.entry_hook);
+    }
+    if (redirect.replacement != nullptr) {
+        redirect.replacement(rdram, ctx);
+    }
+    else {
+        redirect_bypass = func;
+        reinterpret_cast<recomp_func_t*>(func)(rdram, ctx);
+    }
+    if (redirect.return_hook != SIZE_MAX) {
+        recomp::mods::run_hook(rdram, ctx, redirect.return_hook);
+    }
+    return 1;
+}
 #endif
 
 void patch_func(recomp_func_t* target_func, recomp::mods::GenericFunction replacement_func) {
 #if defined(IS_WASM)
-    // Unreachable: no mod code loads in WebAssembly (see LiveRecompilerCodeHandle), and its code can't be rewritten.
-    (void)target_func;
-    (void)replacement_func;
-    assert(false && "patch_func in WebAssembly");
+    add_redirect(target_func).replacement = std::get<recomp_func_t*>(replacement_func);
 #else
     uint8_t* target_func_u8 = reinterpret_cast<uint8_t*>(target_func);
     size_t offset = 0;
@@ -626,10 +755,16 @@ void patch_func(recomp_func_t* target_func, recomp::mods::GenericFunction replac
 }
 
 void unpatch_func(void* target_func, const recomp::mods::PatchData& data) {
+#if defined(IS_WASM)
+    // unload_mods drops every redirect at once.
+    (void)target_func;
+    (void)data;
+#else
     uint64_t old_flags;
     unprotect(target_func, &old_flags);
     memcpy(target_func, data.replaced_bytes.data(), data.replaced_bytes.size());
     protect(target_func, old_flags);
+#endif
 }
 
 void recomp::mods::ModContext::add_opened_mod(ModManifest&& manifest, config::Config&& config, std::vector<size_t>&& game_indices, std::vector<ModContentTypeId>&& detected_content_types, std::vector<char>&& thumbnail) {
@@ -667,6 +802,10 @@ void recomp::mods::ModContext::register_game(const std::string& mod_game_id) {
 
 void recomp::mods::ModContext::register_embedded_mod(const std::string &mod_id, std::span<const uint8_t> mod_bytes) {
     embedded_mod_bytes.emplace(mod_id, mod_bytes);
+}
+
+void recomp::mods::ModContext::register_precompiled_mod(const recomp_precompiled_mod& code) {
+    precompiled_mods.emplace(code.hash, &code);
 }
 
 void recomp::mods::ModContext::register_deprecated_mod(const std::string& mod_id, DeprecationStatus deprecation_status, const Version &maximum_version) {
@@ -2050,6 +2189,23 @@ std::vector<recomp::mods::ModLoadErrorDetails> build_regen_list(
     return {};
 }
 
+#if defined(IS_WASM)
+// In WebAssembly a hooked function isn't regenerated with its hooks: recomp_redirect runs them around it.
+void redirect_hooks(const RegeneratedList& regenlist) {
+    for (size_t func_index = 0; func_index < regenlist.func_ptrs.size(); func_index++) {
+        Redirect& redirect = add_redirect(regenlist.func_ptrs[func_index]);
+        auto find_entry_it = regenlist.entry_func_hooks.find(func_index);
+        if (find_entry_it != regenlist.entry_func_hooks.end()) {
+            redirect.entry_hook = find_entry_it->second;
+        }
+        auto find_return_it = regenlist.return_func_hooks.find(func_index);
+        if (find_return_it != regenlist.return_func_hooks.end()) {
+            redirect.return_hook = find_return_it->second;
+        }
+    }
+}
+#endif
+
 std::unique_ptr<recomp::mods::LiveRecompilerCodeHandle> apply_regenlist(RegeneratedList& regenlist, std::span<const uint8_t> rom) {
     using namespace recomp::mods;
 
@@ -2115,6 +2271,9 @@ std::vector<recomp::mods::ModLoadErrorDetails> recomp::mods::ModContext::regener
 
     // Apply the regenlist.
     if (!regenlist.functions.empty()) {
+#if defined(IS_WASM)
+        redirect_hooks(regenlist);
+#else
         regenerated_code_handle = apply_regenlist(regenlist, decompressed_rom);
         if (!regenerated_code_handle || !regenerated_code_handle->good()) {
             regenerated_code_handle.reset();
@@ -2123,6 +2282,7 @@ std::vector<recomp::mods::ModLoadErrorDetails> recomp::mods::ModContext::regener
             });
             return ret;
         }
+#endif
     }
 
     if (!regenlist.patched_hooks.empty()) {
@@ -2163,6 +2323,9 @@ std::vector<recomp::mods::ModLoadErrorDetails> recomp::mods::ModContext::regener
         }
 
         // Apply the patched function regenlist.
+#if defined(IS_WASM)
+        redirect_hooks(patch_regenlist);
+#else
         base_patched_code_handle = apply_regenlist(patch_regenlist, overlays::get_patch_binary());
         if (!base_patched_code_handle || !base_patched_code_handle->good()) {
             regenerated_code_handle.reset();
@@ -2172,6 +2335,7 @@ std::vector<recomp::mods::ModLoadErrorDetails> recomp::mods::ModContext::regener
             });
             return ret;
         }
+#endif
     }
 
     return ret;
@@ -2228,6 +2392,10 @@ recomp::mods::CodeModLoadError recomp::mods::ModContext::init_mod_code(uint8_t* 
     }
 
     std::span<uint8_t> binary_span {reinterpret_cast<uint8_t*>(binary_data.data()), binary_data.size() };
+
+    // Use this mod's code recompiled ahead of time if the recomp has it.
+    auto find_precompiled_it = precompiled_mods.find(N64Recomp::mod_code_hash(binary_span, syms_data));
+    mod.precompiled_code = find_precompiled_it != precompiled_mods.end() ? find_precompiled_it->second : nullptr;
 
     // Parse the symbol file into the recompiler context.
     N64Recomp::ModSymbolsError symbol_load_error = N64Recomp::parse_mod_symbols(syms_data, binary_span, section_vrom_map, *mod.recompiler_context);
@@ -2400,10 +2568,24 @@ recomp::mods::CodeModLoadError recomp::mods::ModContext::load_mod_code(uint8_t* 
         .reference_section_addresses = section_addresses,
     };
 
+    // Code recompiled ahead of time and linked in (register_precompiled_mod).
+    if (mod.precompiled_code != nullptr) {
+        // Hooks can't be added to it either.
+        if (!entry_func_hooks.empty() || !return_func_hooks.empty()) {
+            return CodeModLoadError::OfflineModHooked;
+        }
+
+        mod.code_handle = std::make_unique<PrecompiledCodeHandle>(*mod.precompiled_code, *mod.recompiler_context, handle_inputs);
+        if (!mod.code_handle->good()) {
+            mod.code_handle.reset();
+            error_param = mod.manifest.mod_id;
+            return CodeModLoadError::FailedToLoadNativeCode;
+        }
+    }
     // Use a dynamic library code handle. This feature isn't meant to be used by end users, but provides a more debuggable
     // experience than the live recompiler for mod developers.
     // Enabled if the mod's filename ends with ".offline.nrm".
-    if (mod.manifest.mod_root_path.filename().string().ends_with(".offline.nrm")) {
+    else if (mod.manifest.mod_root_path.filename().string().ends_with(".offline.nrm")) {
         // Hooks can't be generated for native mods, so return an error if any of the functions this mod replaces are also hooked by another mod.
         if (!entry_func_hooks.empty() || !return_func_hooks.empty()) {
             return CodeModLoadError::OfflineModHooked;
@@ -2663,7 +2845,9 @@ recomp::mods::CodeModLoadError recomp::mods::ModContext::resolve_code_dependenci
 
         // Copy the original bytes so they can be restored later after the mod is unloaded.
         PatchData& cur_replacement_data = patched_funcs[to_replace];
+#if !defined(IS_WASM)
         memcpy(cur_replacement_data.replaced_bytes.data(), reinterpret_cast<void*>(to_replace), cur_replacement_data.replaced_bytes.size());
+#endif
         cur_replacement_data.mod_id = mod.manifest.mod_id;
 
         // Patch the function to redirect it to the replacement.
@@ -2678,6 +2862,9 @@ void recomp::mods::ModContext::unload_mods() {
         unpatch_func(reinterpret_cast<void*>(replacement_func), replacement_data);
     }
     patched_funcs.clear();
+#if defined(IS_WASM)
+    reset_redirects();
+#endif
     loaded_mods_by_id.clear();
     hook_slots.clear();
     processed_hook_slots.clear();

@@ -344,6 +344,7 @@ namespace recomp {
 
             void register_game(const std::string& mod_game_id);
             void register_embedded_mod(const std::string& mod_id, std::span<const uint8_t> mod_bytes);
+            void register_precompiled_mod(const recomp_precompiled_mod& code);
             void register_deprecated_mod(const std::string& mod_id, DeprecationStatus deprecation_status, const Version& maximum_version);
             std::vector<ModOpenErrorDetails> scan_mod_folder(const std::filesystem::path& mod_folder);
             void close_mods();
@@ -411,6 +412,8 @@ namespace recomp {
             // Maps game mod ID to the mod's internal integer ID. 
             std::unordered_map<std::string, size_t> mod_game_ids;
             std::unordered_map<std::string, std::span<const uint8_t>> embedded_mod_bytes;
+            // Mods' code recompiled ahead of time, by the hash of the mod files it was made from (mod_code_hash).
+            std::unordered_map<uint64_t, const recomp_precompiled_mod*> precompiled_mods;
             std::vector<ModHandle> opened_mods;
             std::unordered_map<std::string, size_t> opened_mods_by_id;
             std::unordered_map<std::filesystem::path::string_type, size_t> opened_mods_by_filename;
@@ -469,6 +472,8 @@ namespace recomp {
             config::Config config;
             std::unique_ptr<ModCodeHandle> code_handle;
             std::unique_ptr<N64Recomp::Context> recompiler_context;
+            // This mod's code recompiled ahead of time, if the recomp has it (register_precompiled_mod).
+            const recomp_precompiled_mod* precompiled_code = nullptr;
             std::vector<uint32_t> section_load_addresses;
             // Content types present in this mod.
             std::vector<ModContentTypeId> content_types;
@@ -578,6 +583,29 @@ namespace recomp {
             int32_t* section_addresses;
         };
 
+        // A mod's code recompiled ahead of time and linked into the executable (recomp_precompiled_mod in recomp.h), for a
+        // platform without the live recompiler. It calls the runtime's functions directly, so it's given no pointers to them.
+        class PrecompiledCodeHandle : public ModCodeHandle {
+        public:
+            PrecompiledCodeHandle(const recomp_precompiled_mod& code, const N64Recomp::Context& context, const ModCodeHandleInputs& inputs);
+            bool good() final { return is_good; }
+            uint32_t get_api_version() final { return 1; }
+            void set_imported_function(size_t import_index, GenericFunction func) final;
+            CodeModLoadError populate_reference_symbols(const N64Recomp::Context& context, std::string& error_param) final;
+            uint32_t get_base_event_index() final {
+                return *code.base_event_index;
+            }
+            void set_local_section_address(size_t section_index, int32_t address) final {
+                code.section_addresses[section_index] = address;
+            }
+            GenericFunction get_function_handle(size_t func_index) final {
+                return GenericFunction{ code.functions[func_index] };
+            }
+        private:
+            const recomp_precompiled_mod& code;
+            bool is_good;
+        };
+
         class LiveRecompilerCodeHandle : public ModCodeHandle {
         public:
             LiveRecompilerCodeHandle(const N64Recomp::Context& context, const ModCodeHandleInputs& inputs,
@@ -626,6 +654,10 @@ namespace recomp {
 
         void initialize_mods();
         void register_embedded_mod(const std::string& mod_id, std::span<const uint8_t> mod_bytes);
+        // Code for a mod (an embedded one, typically) recompiled ahead of time with OfflineModRecomp --static, which the
+        // runtime runs for a mod whose files it was made from, in place of recompiling it as it loads. Needed where
+        // there's no live recompiler (WebAssembly), where without it a mod with code fails to load.
+        void register_precompiled_mod(const recomp_precompiled_mod& code);
         void register_deprecated_mod(const std::string& mod_id, DeprecationStatus deprecation_status, const Version &maximum_version);
         void scan_mods();
         void close_mods();

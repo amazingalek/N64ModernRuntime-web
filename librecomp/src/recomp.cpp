@@ -104,6 +104,11 @@ void recomp::mods::register_embedded_mod(const std::string &mod_id, std::span<co
     mod_context->register_embedded_mod(mod_id, mod_bytes);
 }
 
+void recomp::mods::register_precompiled_mod(const recomp_precompiled_mod& code) {
+    std::lock_guard<std::mutex> lock(mod_context_mutex);
+    mod_context->register_precompiled_mod(code);
+}
+
 void recomp::mods::register_deprecated_mod(const std::string& mod_id, recomp::mods::DeprecationStatus deprecation_status, const Version& maximum_version) {
     std::lock_guard<std::mutex> lock(mod_context_mutex);
     mod_context->register_deprecated_mod(mod_id, deprecation_status, maximum_version);
