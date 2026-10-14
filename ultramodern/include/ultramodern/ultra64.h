@@ -103,6 +103,11 @@ typedef struct OSThread_t {
     uint16_t state;
     OSId id;
     int32_t pad3;
+#if UINTPTR_MAX == UINT32_MAX
+    // libultra's thprof, which a game may write (Banjo-Tooie does, creating its threads). A 64-bit host's pointer is
+    // aligned past it; a 32-bit one's (wasm) would sit here without this.
+    int32_t pad4;
+#endif
     UltraThreadContext* context; // An actual pointer regardless of platform
     int32_t sp;
 } OSThread;
