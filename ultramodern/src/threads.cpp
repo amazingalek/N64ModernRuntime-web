@@ -246,7 +246,26 @@ extern "C" void osStartThread(RDRAM_ARG PTR(OSThread) t_) {
 
     // If this is a game thread, insert the new thread into the running queue and then check the running queue.
     if (thread_self) {
+#if ULTRAMODERN_LIBULTRA_THREAD_STOP
+        // Only a stopped thread can be started (libultra ignores the call otherwise).
+        if (t->state != OSThreadState::STOPPED) {
+            return;
+        }
+        // A thread stopped by another thread while it was blocked on a message queue goes back on that queue,
+        // and the queue's first waiter is made runnable so that it rechecks the queue, like libultra does.
+        // Messages that arrived while the thread was stopped are picked up that way.
+        if (t->queue != NULLPTR && t->queue != ultramodern::running_queue) {
+            PTR(PTR(OSThread)) waiting_queue = t->queue;
+            ultramodern::thread_queue_insert(PASS_RDRAM waiting_queue, t_);
+            t->state = OSThreadState::BLOCKED;
+            ultramodern::schedule_running_thread(PASS_RDRAM ultramodern::thread_queue_pop(PASS_RDRAM waiting_queue));
+        }
+        else {
+            ultramodern::schedule_running_thread(PASS_RDRAM t_);
+        }
+#else
         ultramodern::schedule_running_thread(PASS_RDRAM t_);
+#endif
         ultramodern::check_running_queue(PASS_RDRAM1);
     }
     // Otherwise, immediately start the thread and terminate this one.
@@ -287,9 +306,28 @@ extern "C" void osStopThread(RDRAM_ARG PTR(OSThread) t_) {
     if (t_ == thread_self) {
         ultramodern::run_next_thread_and_wait(PASS_RDRAM1);
     }
+#if ULTRAMODERN_LIBULTRA_THREAD_STOP
+    // Stopping another thread: it is either waiting in the running queue or blocked on a message queue (only one
+    // game thread runs at a time). Take it off that queue so nothing schedules it until osStartThread, but keep
+    // t->queue so that osStartThread can put a blocked thread back where it was waiting.
+    else {
+        OSThread* t = TO_PTR(OSThread, t_);
+        if (t->state == OSThreadState::STOPPED) {
+            return;
+        }
+        if (t->queue != NULLPTR) {
+            ultramodern::thread_queue_remove(PASS_RDRAM t->queue, t_);
+        }
+        if (t->queue == ultramodern::running_queue) {
+            t->queue = NULLPTR;
+        }
+        t->state = OSThreadState::STOPPED;
+    }
+#else
     else {
         assert(false);
     }
+#endif
 }
 
 extern "C" void osDestroyThread(RDRAM_ARG PTR(OSThread) t_) {

@@ -39,3 +39,10 @@ target_compile_options(ultramodern PRIVATE
 if (WIN32)
     add_compile_definitions(NOMINMAX)
 endif()
+
+# osStopThread on another thread, and osStartThread on a thread stopped while it waited on a message queue, as libultra
+# does them (threads.cpp); without it, stopping another thread asserts.
+option(ULTRAMODERN_LIBULTRA_THREAD_STOP "osStopThread/osStartThread on another thread as libultra does them (always on with Emscripten)" OFF)
+if (ULTRAMODERN_LIBULTRA_THREAD_STOP OR EMSCRIPTEN)
+    target_compile_definitions(ultramodern PRIVATE ULTRAMODERN_LIBULTRA_THREAD_STOP=1)
+endif()

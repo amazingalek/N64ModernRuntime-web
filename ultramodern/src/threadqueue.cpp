@@ -43,14 +43,15 @@ PTR(OSThread) ultramodern::thread_queue_pop(RDRAM_ARG PTR(PTR(OSThread)) queue_)
 bool ultramodern::thread_queue_remove(RDRAM_ARG PTR(PTR(OSThread)) queue_, PTR(OSThread) t_) {
     debug_printf("[Thread Queue] Removing thread %d from queue 0x%08X\n", TO_PTR(OSThread, t_)->id, (uintptr_t)queue_);
 
-    PTR(PTR(OSThread)) cur = queue_;
-    while (cur != NULLPTR) {
-        PTR(OSThread)* cur_ptr = queue_to_ptr(PASS_RDRAM queue_);
-        if (*cur_ptr == t_) {
-            *cur_ptr = TO_PTR(OSThread, *cur_ptr)->next;
+    PTR(OSThread)* cur = queue_to_ptr(PASS_RDRAM queue_);
+    while (*cur != NULLPTR) {
+        OSThread* cur_thread = TO_PTR(OSThread, *cur);
+        if (*cur == t_) {
+            *cur = cur_thread->next;
+            cur_thread->next = NULLPTR;
             return true;
         }
-        cur = TO_PTR(OSThread, *cur_ptr)->next;
+        cur = &cur_thread->next;
     }
 
     return false;
