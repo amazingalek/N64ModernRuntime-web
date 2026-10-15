@@ -41,6 +41,11 @@ PTR(OSThread) ultramodern::thread_queue_pop(RDRAM_ARG PTR(PTR(OSThread)) queue_)
 }
 
 bool ultramodern::thread_queue_remove(RDRAM_ARG PTR(PTR(OSThread)) queue_, PTR(OSThread) t_) {
+    // osDestroyThread passes a thread that isn't stopped but is on no queue (one that ran and returned) with a null
+    // queue: there is nothing to take it off, as upstream's loop never started for one.
+    if (queue_ == NULLPTR) {
+        return false;
+    }
     debug_printf("[Thread Queue] Removing thread %d from queue 0x%08X\n", TO_PTR(OSThread, t_)->id, (uintptr_t)queue_);
 
     PTR(OSThread)* cur = queue_to_ptr(PASS_RDRAM queue_);
