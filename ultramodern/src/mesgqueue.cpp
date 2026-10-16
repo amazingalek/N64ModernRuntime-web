@@ -1,6 +1,5 @@
 #include <bitset>
 #include <thread>
-#include <vector>
 
 #include "blockingconcurrentqueue.h"
 
@@ -13,11 +12,8 @@ struct QueuedMessage {
     bool jam;
     bool requeue_if_blocked;
 };
-
-static moodycamel::BlockingConcurrentQueue<QueuedMessage> external_messages {};
-std::bitset<32> requeue_enabled;
-
 #if ULTRAMODERN_HOLD_BLOCKED_MESSAGES
+
 bool do_send(RDRAM_ARG PTR(OSMesgQueue) mq_, OSMesg msg, bool jam, bool block);
 
 // An external message whose queue is full and that is to be sent again waits here, and is tried again before any other
@@ -44,14 +40,13 @@ static bool send_blocked_messages(RDRAM_ARG1) {
     return sent_any;
 }
 
-static void requeue_blocked_message(const QueuedMessage& mesg) {
-    blocked_messages.push_back(mesg);
-}
+#define REQUEUE_BLOCKED_MESSAGE(mesg) blocked_messages.push_back(mesg)
 #else
-static void requeue_blocked_message(const QueuedMessage& mesg) {
-    external_messages.enqueue(mesg);
-}
+#define REQUEUE_BLOCKED_MESSAGE(mesg) external_messages.enqueue(mesg)
 #endif
+
+static moodycamel::BlockingConcurrentQueue<QueuedMessage> external_messages {};
+std::bitset<32> requeue_enabled;
 
 void ultramodern::set_message_queue_control(const ultramodern::MessageQueueControl& mqc) {
     requeue_enabled.reset();
@@ -86,7 +81,7 @@ void dequeue_external_messages(RDRAM_ARG1) {
         }
     }
     for (QueuedMessage& cur_mesg : requeued_messages) {
-        requeue_blocked_message(cur_mesg);
+        REQUEUE_BLOCKED_MESSAGE(cur_mesg);
     }
 }
 
@@ -99,7 +94,7 @@ void ultramodern::wait_for_external_message(RDRAM_ARG1) {
 #endif
     external_messages.wait_dequeue(to_send);
     if (!do_send(PASS_RDRAM to_send.mq, to_send.mesg, to_send.jam, false) && to_send.requeue_if_blocked) {
-        requeue_blocked_message(to_send);
+        REQUEUE_BLOCKED_MESSAGE(to_send);
     }
 }
 
@@ -112,7 +107,7 @@ void ultramodern::wait_for_external_message_timed(RDRAM_ARG u32 millis) {
 #endif
     if (external_messages.wait_dequeue_timed(to_send, std::chrono::milliseconds{millis})) {
         if (!do_send(PASS_RDRAM to_send.mq, to_send.mesg, to_send.jam, false) && to_send.requeue_if_blocked) {
-            requeue_blocked_message(to_send);
+            REQUEUE_BLOCKED_MESSAGE(to_send);
         }
     }
 }
