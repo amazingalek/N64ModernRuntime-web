@@ -304,6 +304,11 @@ extern "C" void osStopThread(RDRAM_ARG PTR(OSThread) t_) {
     }
     // Check if the thread is stopping itself (arg is null or thread_self).
     if (t_ == thread_self) {
+#if ULTRAMODERN_LIBULTRA_THREAD_STOP
+        // Stopped, so that osStartThread starts it again: a running thread's state is still QUEUED from when it was
+        // scheduled, and osStartThread ignores a thread that isn't stopped.
+        TO_PTR(OSThread, t_)->state = OSThreadState::STOPPED;
+#endif
         ultramodern::run_next_thread_and_wait(PASS_RDRAM1);
     }
 #if ULTRAMODERN_LIBULTRA_THREAD_STOP
