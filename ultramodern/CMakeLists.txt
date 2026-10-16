@@ -46,3 +46,10 @@ option(ULTRAMODERN_LIBULTRA_THREAD_STOP "osStopThread/osStartThread on another t
 if (ULTRAMODERN_LIBULTRA_THREAD_STOP OR EMSCRIPTEN)
     target_compile_definitions(ultramodern PRIVATE ULTRAMODERN_LIBULTRA_THREAD_STOP=1)
 endif()
+
+# An external message whose queue is full and that is to be sent again waits in a list of its own, tried again first at
+# the next OS call or idle wait, instead of going back into the queue the idle thread spins on (mesgqueue.cpp).
+option(ULTRAMODERN_HOLD_BLOCKED_MESSAGES "A blocked external message held in a list, not requeued (always on with Emscripten)" OFF)
+if (ULTRAMODERN_HOLD_BLOCKED_MESSAGES OR EMSCRIPTEN)
+    target_compile_definitions(ultramodern PRIVATE ULTRAMODERN_HOLD_BLOCKED_MESSAGES=1)
+endif()

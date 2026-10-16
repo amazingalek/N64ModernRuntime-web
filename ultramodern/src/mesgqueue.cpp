@@ -1,5 +1,6 @@
 #include <bitset>
 #include <thread>
+#include <vector>
 
 #include "blockingconcurrentqueue.h"
 
@@ -37,6 +38,63 @@ void ultramodern::enqueue_external_message(PTR(OSMesgQueue) mq, OSMesg msg, bool
 
 bool do_send(RDRAM_ARG PTR(OSMesgQueue) mq_, OSMesg msg, bool jam, bool block);
 
+#if ULTRAMODERN_HOLD_BLOCKED_MESSAGES
+// An external message whose queue is full and that is to be sent again waits here, and is tried again before any other
+// at a game thread's next OS call or the idle thread's next wait. Put back into external_messages, the idle thread
+// (pause_self) took it again at once, since that queue keeps no order between producers: it spun on it, ~12 million
+// times a second, and the messages behind it waited until a game thread's OS call drained the queue, often the
+// scheduler's at the next retrace. Jet Force Gemini leaves a controller (SI) message blocked for good, so with the RSP's
+// completion of a display list sent before the RDP's, each frame's RDP completion waited for a retrace: 4-6 retraces a
+// game frame instead of 2. Only the game thread that runs touches the list.
+static std::vector<QueuedMessage> blocked_messages{};
+
+static bool send_blocked_messages(RDRAM_ARG1) {
+    bool sent_any = false;
+    for (size_t i = 0; i < blocked_messages.size();) {
+        const QueuedMessage& cur_mesg = blocked_messages[i];
+        if (do_send(PASS_RDRAM cur_mesg.mq, cur_mesg.mesg, cur_mesg.jam, false)) {
+            blocked_messages.erase(blocked_messages.begin() + i);
+            sent_any = true;
+        } else {
+            i++;
+        }
+    }
+    return sent_any;
+}
+
+static void send_external_message(RDRAM_ARG const QueuedMessage& to_send) {
+    if (!do_send(PASS_RDRAM to_send.mq, to_send.mesg, to_send.jam, false) && to_send.requeue_if_blocked) {
+        blocked_messages.push_back(to_send);
+    }
+}
+
+void dequeue_external_messages(RDRAM_ARG1) {
+    QueuedMessage to_send;
+    send_blocked_messages(PASS_RDRAM1);
+    while (external_messages.try_dequeue(to_send)) {
+        send_external_message(PASS_RDRAM to_send);
+    }
+}
+
+void ultramodern::wait_for_external_message(RDRAM_ARG1) {
+    QueuedMessage to_send;
+    if (send_blocked_messages(PASS_RDRAM1)) {
+        return;
+    }
+    external_messages.wait_dequeue(to_send);
+    send_external_message(PASS_RDRAM to_send);
+}
+
+void ultramodern::wait_for_external_message_timed(RDRAM_ARG u32 millis) {
+    QueuedMessage to_send;
+    if (send_blocked_messages(PASS_RDRAM1)) {
+        return;
+    }
+    if (external_messages.wait_dequeue_timed(to_send, std::chrono::milliseconds{millis})) {
+        send_external_message(PASS_RDRAM to_send);
+    }
+}
+#else
 void dequeue_external_messages(RDRAM_ARG1) {
     QueuedMessage to_send;
     std::vector<QueuedMessage> requeued_messages{};
@@ -66,6 +124,7 @@ void ultramodern::wait_for_external_message_timed(RDRAM_ARG u32 millis) {
         }
     }
 }
+#endif
 
 extern "C" void osCreateMesgQueue(RDRAM_ARG PTR(OSMesgQueue) mq_, PTR(OSMesg) msg, s32 count) {
     OSMesgQueue *mq = TO_PTR(OSMesgQueue, mq_);
