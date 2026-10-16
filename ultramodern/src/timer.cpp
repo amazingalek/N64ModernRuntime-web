@@ -20,6 +20,38 @@ constexpr uint32_t speed_multiplier = 1;
 // N64 CPU counter ticks per millisecond
 constexpr uint32_t counter_per_ms = 46'875 * speed_multiplier;
 
+#if defined(__EMSCRIPTEN__)
+// The timer thread's queue, whose wait_dequeue_timed ends at its time. On a page a timed wait can end long after its
+// time: in Firefox on Windows every one ends on the system timer's tick, 15.6 ms unless the browser's process asks for
+// a finer one, so a timer a fraction of a millisecond away fired a tick late, and the game thread waiting for it waited
+// that long (Conker's timers are 0.4 ms or less, about 60 a second). So a timer less than 2 ms away is waited for by
+// polling the queue, and a farther one on a timer as before: polling the last stretch before those too, up to a tick,
+// kept the browser ~0.6 cores busier in Firefox with Banjo's page and presented no more.
+template<typename T>
+struct TimerQueue : moodycamel::BlockingConcurrentQueue<T> {
+    TimerQueue() : moodycamel::BlockingConcurrentQueue<T>() {}
+
+    template<typename Rep, typename Period>
+    bool wait_dequeue_timed(T& item, const std::chrono::duration<Rep, Period>& timeout) {
+        if (timeout >= std::chrono::milliseconds(2)) {
+            return moodycamel::BlockingConcurrentQueue<T>::wait_dequeue_timed(item, timeout);
+        }
+
+        const auto deadline = std::chrono::high_resolution_clock::now() + timeout;
+        while (std::chrono::high_resolution_clock::now() < deadline) {
+            if (this->try_dequeue(item)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+};
+#else
+template<typename T>
+using TimerQueue = moodycamel::BlockingConcurrentQueue<T>;
+#endif
+
 struct OSTimer {
     PTR(OSTimer) unused1;
     PTR(OSTimer) unused2;
@@ -41,7 +73,7 @@ using Action = std::variant<AddTimerAction, RemoveTimerAction>;
 
 struct {
     std::thread thread;
-    moodycamel::BlockingConcurrentQueue<Action> action_queue{};
+    TimerQueue<Action> action_queue{};
 } timer_context;
 
 uint64_t duration_to_ticks(std::chrono::high_resolution_clock::duration duration) {
