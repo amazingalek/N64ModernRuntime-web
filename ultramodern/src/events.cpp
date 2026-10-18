@@ -179,6 +179,95 @@ extern moodycamel::LightweightSemaphore graphics_shutdown_ready;
 
 void set_dummy_vi(bool odd);
 
+#if defined(__EMSCRIPTEN_PTHREADS__)
+#include <algorithm>
+#include <climits>
+#include <cstdio>
+#include <emscripten/emscripten.h>
+#include <emscripten/html5.h>
+#include <emscripten/proxying.h>
+#include <emscripten/threading.h>
+
+// On a page the VI thread's timed sleep can end long after the VI's time: in Firefox on Windows every timed wait off the
+// page's thread ends on the system timer's tick (15.6 ms unless the browser's process asks for a finer one), so VIs came
+// 15.6 or 31.2 ms apart instead of 16.7. RT64 reads a game's rate from how many VIs each of its frames was shown for,
+// and from those it read GoldenEye, a new frame at nearly every VI, as a game at 30 about 5 times a second, made two
+// presents of each of those frames, and presented 63-64 a second on a 60 Hz display. So where a timed wait ends late,
+// the VI thread waits for the browser's animation frames, whose futex wake comes at once, and a VI comes at the first
+// frame less than half a VI before its time: on a 60 Hz display every VI is a frame apart. A timed wait to the VI's time
+// stays as the fallback, for a page whose frames have stopped (hidden). Elsewhere (Chrome, a finer timer) the VI thread
+// sleeps as before.
+namespace {
+    // Whether a timed wait off the page's thread ends late: three waits of 100 us, late if the shortest took more than
+    // 4 ms (plume's timedWaitsEndLate() measures the same).
+    bool vi_waits_end_late() {
+        static const bool late = []() {
+            uint32_t futex = 0;
+            double shortest = 1e9;
+            for (int i = 0; i < 3; i++) {
+                const double start = emscripten_get_now();
+                emscripten_futex_wait(&futex, 0, 0.1);
+                shortest = std::min(shortest, emscripten_get_now() - start);
+            }
+
+            return shortest > 4.0;
+        }();
+
+        return late;
+    }
+
+    // The browser's animation frames, counted on the page's thread: a futex woken at each. Only the count crosses
+    // threads: the VI thread times a frame by when its wake reaches it, since a time read on the page's thread and one
+    // read on another don't agree in Firefox (each context's own performance.timeOrigin), and comparing them sent VIs
+    // 1,500-1,800 a second. Firefox also calls back 0.1-5 ms after a frame now and then, which isn't a frame of the display.
+    std::atomic<uint32_t> vi_frame_serial{ 0 };
+
+    bool vi_animation_frame(double, void*) {
+        static double last = 0.0;
+        const double now = emscripten_get_now();
+        if ((now - last) >= 5.0) {
+            last = now;
+            vi_frame_serial++;
+            emscripten_futex_wake(&vi_frame_serial, INT_MAX);
+        }
+
+        return true;
+    }
+
+    void vi_start_frames(void*) {
+        emscripten_request_animation_frame_loop(vi_animation_frame, nullptr);
+    }
+
+    // Holds the VI thread until about the given time, ending on the first animation frame to come less than half a VI
+    // before it, or at the time if none comes by then. False where a timed wait ends on time, and the caller sleeps itself.
+    bool vi_sleep_until(const std::chrono::high_resolution_clock::time_point& time_point) {
+        if (!vi_waits_end_late()) {
+            return false;
+        }
+
+        [[maybe_unused]] static const bool started = []() {
+            emscripten_proxy_async(emscripten_proxy_get_system_queue(), emscripten_main_runtime_thread_id(), vi_start_frames, nullptr);
+            fprintf(stderr, "ultramodern: timed waits end late on this page, so VIs come on the browser's animation frames\n");
+            return true;
+        }();
+
+        const double end = emscripten_get_now() + std::chrono::duration<double, std::milli>(time_point - std::chrono::high_resolution_clock::now()).count();
+        const double from = end - 1000.0 / (2 * 60 * ultramodern::get_speed_multiplier());
+        uint32_t serial = vi_frame_serial;
+        for (;;) {
+            const double now = emscripten_get_now();
+            const uint32_t current = vi_frame_serial;
+            if ((now >= end) || ((current != serial) && (now >= from))) {
+                return true;
+            }
+
+            serial = current;
+            emscripten_futex_wait(&vi_frame_serial, serial, end - now);
+        }
+    }
+}
+#endif
+
 void vi_thread_func() {
     ultramodern::set_native_thread_name("VI Thread");
     // This thread should be prioritized over every other thread in the application, as it's what allows
@@ -204,10 +293,24 @@ void vi_thread_func() {
             // printf("Skipping the next VI wait\n");
             next = std::chrono::high_resolution_clock::now();
         }
+#if defined(__EMSCRIPTEN_PTHREADS__)
+        const bool vi_on_frame = vi_sleep_until(next);
+        if (!vi_on_frame) {
+            ultramodern::sleep_until(next);
+        }
+#else
         ultramodern::sleep_until(next);
+#endif
         auto time_now = ultramodern::time_since_start();
         // Calculate how many VIs have passed
         uint64_t new_total_vis = (time_now * (60 * ultramodern::get_speed_multiplier()) / 1000ms) + 1;
+#if defined(__EMSCRIPTEN_PTHREADS__)
+        // A VI that ended on a frame before its time is that VI all the same: counted from the time, it would be the one
+        // before it again, sent a second time at the next frame (VIs came 64-91 a second).
+        if (vi_on_frame) {
+            new_total_vis = std::max(new_total_vis, total_vis + 1);
+        }
+#endif
         if (new_total_vis > total_vis + 1) {
             //printf("Skipped % " PRId64 " frames in VI interupt thread!\n", new_total_vis - total_vis - 1);
         }
