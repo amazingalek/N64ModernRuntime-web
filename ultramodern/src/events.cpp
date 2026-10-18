@@ -294,13 +294,14 @@ void vi_thread_func() {
             next = std::chrono::high_resolution_clock::now();
         }
 #if defined(__EMSCRIPTEN_PTHREADS__)
+        // A VI that ended on a frame leaves the timed wait below nothing to wait for. That wait stays where it was, so
+        // a recomp's own patches to this loop still apply.
         const bool vi_on_frame = vi_sleep_until(next);
-        if (!vi_on_frame) {
-            ultramodern::sleep_until(next);
+        if (vi_on_frame) {
+            next = std::chrono::high_resolution_clock::now();
         }
-#else
-        ultramodern::sleep_until(next);
 #endif
+        ultramodern::sleep_until(next);
         auto time_now = ultramodern::time_since_start();
         // Calculate how many VIs have passed
         uint64_t new_total_vis = (time_now * (60 * ultramodern::get_speed_multiplier()) / 1000ms) + 1;
