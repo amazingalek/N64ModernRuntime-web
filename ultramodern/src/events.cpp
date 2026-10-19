@@ -175,9 +175,6 @@ uint64_t total_vis = 0;
 
 
 extern std::atomic_bool exited;
-extern moodycamel::LightweightSemaphore graphics_shutdown_ready;
-
-void set_dummy_vi(bool odd);
 
 #if defined(__EMSCRIPTEN_PTHREADS__)
 #include <algorithm>
@@ -197,6 +194,8 @@ void set_dummy_vi(bool odd);
 // frame less than half a VI before its time: on a 60 Hz display every VI is a frame apart. A timed wait to the VI's time
 // stays as the fallback, for a page whose frames have stopped (hidden). Elsewhere (Chrome, a finer timer) the VI thread
 // sleeps as before.
+// It sits up here, apart from vi_thread_func, because a recomp's own patch to the VI thread adds its state just above
+// that function (CBFD-Recompiled's remaining_retraces), and a block there kept such a patch from applying.
 namespace {
     // Whether a timed wait off the page's thread ends late: three waits of 100 us, late if the shortest took more than
     // 4 ms (plume's timedWaitsEndLate() measures the same).
@@ -267,6 +266,10 @@ namespace {
     }
 }
 #endif
+
+extern moodycamel::LightweightSemaphore graphics_shutdown_ready;
+
+void set_dummy_vi(bool odd);
 
 void vi_thread_func() {
     ultramodern::set_native_thread_name("VI Thread");
