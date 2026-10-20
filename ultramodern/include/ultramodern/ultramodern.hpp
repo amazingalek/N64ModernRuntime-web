@@ -2,6 +2,7 @@
 #define __ultramodern_HPP__
 
 #include <thread>
+#include "ultramodern/displaylists.hpp"
 #include <cassert>
 #include <stdexcept>
 #include <span>

@@ -53,3 +53,10 @@ option(ULTRAMODERN_HOLD_BLOCKED_MESSAGES "A blocked external message held in a l
 if (ULTRAMODERN_HOLD_BLOCKED_MESSAGES OR EMSCRIPTEN)
     target_compile_definitions(ultramodern PRIVATE ULTRAMODERN_HOLD_BLOCKED_MESSAGES=1)
 endif()
+
+# A load from ROM onto display list commands the renderer may not have read yet waits until it has (src/displaylists.cpp).
+target_sources(ultramodern PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/displaylists.cpp")
+option(ULTRAMODERN_LOADS_WAIT_FOR_DISPLAY_LISTS "A load from ROM onto display list commands the renderer may not have read yet waits for it (always on with Emscripten)" OFF)
+if (ULTRAMODERN_LOADS_WAIT_FOR_DISPLAY_LISTS OR EMSCRIPTEN)
+    target_compile_definitions(ultramodern PRIVATE ULTRAMODERN_LOADS_WAIT_FOR_DISPLAY_LISTS=1)
+endif()

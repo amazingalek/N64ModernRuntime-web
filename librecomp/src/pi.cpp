@@ -271,6 +271,8 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
     // TODO implement unaligned DMA correctly
     if (direction == 0) {
         if (physical_addr >= recomp::rom_base) {
+            // Not onto commands of a display list the renderer hasn't read yet (ultramodern's displaylists.cpp).
+            ultramodern::wait_for_displaylists_read((uint32_t)rdram_address & 0x1FFFFFFF, size);
             // read cart rom
             recomp::do_rom_read(rdram, rdram_address, physical_addr, size);
 

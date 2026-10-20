@@ -14,6 +14,8 @@ extern "C" void osSpTaskStartGo_recomp(uint8_t* rdram, recomp_context* ctx) {
     OSTask* task = TO_PTR(OSTask, ctx->r4);
     if (task->t.type == M_GFXTASK) {
         //printf("[sp] Gfx task: %08X\n", (uint32_t)ctx->r4);
+        // Counted for the loads from ROM that wait for the renderer to read it (ultramodern's displaylists.cpp).
+        ultramodern::displaylist_sent();
     } else if (task->t.type == M_AUDTASK) {
         //printf("[sp] Audio task: %08X\n", (uint32_t)ctx->r4);
     }
