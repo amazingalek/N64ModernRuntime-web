@@ -361,8 +361,19 @@ nlohmann::json Config::get_json_config() const {
 
 nlohmann::json Config::get_storage_json() const {
     nlohmann::json json;
+#ifdef __EMSCRIPTEN__
+    json = nlohmann::json::object();
+#endif
     for (const auto& option : schema.options) {
         const ConfigValueVariant value = get_option_value(option.id);
+
+#ifdef __EMSCRIPTEN__
+        // A page's build changes under its player at every update, so only what the player changed is saved: an option
+        // left at its default follows the default of the build that reads the file, not the one that first wrote it.
+        if (value == get_option_default_value(option.id)) {
+            continue;
+        }
+#endif
 
         if (json_serialize_option_map.contains(option.id)) {
             auto cb = json_serialize_option_map.at(option.id);
@@ -462,6 +473,12 @@ void Config::derive_all_config_option_dependencies() {
 }
 
 ConfigValueVariant Config::parse_config_option_json_value(const nlohmann::json& json_value, const ConfigOption &option) {
+#ifdef __EMSCRIPTEN__
+    // An option the file leaves out is at its default (get_storage_json), which an option's own parser isn't given.
+    if (json_value.is_null()) {
+        return get_option_default_value(option.id);
+    }
+#endif
     if (json_parse_option_map.contains(option.id)) {
         return json_parse_option_map[option.id](json_value);
     }
