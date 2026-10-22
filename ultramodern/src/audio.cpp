@@ -1,6 +1,7 @@
 #include "ultramodern/ultra64.h"
 #include "ultramodern/ultramodern.hpp"
 #include <cassert>
+#include <cstdio>
 
 static uint32_t sample_rate = 48000;
 
@@ -25,6 +26,20 @@ void ultramodern::set_audio_frequency(uint32_t freq) {
 void ultramodern::queue_audio_buffer(RDRAM_ARG PTR(int16_t) audio_data_, uint32_t byte_count) {
     // Ensure that the byte count is an integer multiple of samples.
     assert((byte_count & 1) == 0);
+
+    // A game may give its buffer's uncached address (KSEG1, from 0xA0000000), which TO_PTR would put 512 MB past
+    // RDRAM: it's read through the cached one (KSEG0) for the same memory. A buffer that doesn't lie in RDRAM's 8 MB
+    // isn't played, as reading it would read past RDRAM (into another allocation on a page, which has no guard region).
+    const uint32_t rdram_address = uint32_t(audio_data_) & 0x1FFFFFFF;
+    if ((uint32_t(audio_data_) & 0xC0000000) != 0x80000000 || rdram_address > 0x800000 || byte_count > 0x800000 - rdram_address) {
+        static bool reported = false;
+        if (!reported) {
+            reported = true;
+            fprintf(stderr, "ultramodern: a sound buffer outside RDRAM (0x%08X, %u bytes) isn't played\n", uint32_t(audio_data_), byte_count);
+        }
+        return;
+    }
+    audio_data_ = PTR(int16_t)(rdram_address | 0x80000000);
 
     // Calculate the number of samples from the number of bytes.
     uint32_t sample_count = byte_count / sizeof(int16_t);
