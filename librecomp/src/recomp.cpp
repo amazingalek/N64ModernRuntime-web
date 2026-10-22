@@ -479,13 +479,9 @@ extern "C" void cop0_status_write(recomp_context* ctx, gpr value) {
         changed &= ~(uint32_t)StatusReg::FR;
     }
 
-    // If any other bits were changed, assert false as they're not handled currently
-    if (changed) {
-        printf("Unhandled status register bits changed: 0x%08X\n", changed);
-        assert(false);
-        exit(EXIT_FAILURE);
-    }
-    
+    // The other bits (the interrupt mask, CU0-CU3, KSU, EXL, ERL) change nothing for recompiled code, which takes no
+    // interrupts or exceptions and always has its FPU: they're stored for cop0_status_read, as the CPU keeps them.
+
     // Update the status register in the context
     ctx->status_reg = new_sr;
 }
