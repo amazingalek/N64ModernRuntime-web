@@ -178,6 +178,7 @@ extern std::atomic_bool exited;
 
 #if defined(__EMSCRIPTEN_PTHREADS__)
 #include <algorithm>
+#include <cerrno>
 #include <climits>
 #include <cstdio>
 #include <emscripten/emscripten.h>
@@ -197,10 +198,14 @@ extern std::atomic_bool exited;
 // It sits up here, apart from vi_thread_func, because a recomp's own patch to the VI thread adds its state just above
 // that function (CBFD-Recompiled's remaining_retraces), and a block there kept such a patch from applying.
 namespace {
-    // Whether a timed wait off the page's thread ends late: three waits of 100 us, late if the shortest took more than
-    // 4 ms (plume's timedWaitsEndLate() measures the same).
+    // Whether a timed wait off the page's thread ends late, judged as plume's timedWaitsEndLate() judges it: first three
+    // waits of 100 us, late if the shortest took more than 4 ms, then while that judged them on time the VI thread's own
+    // (vi_wait_ended()). A page's waits can turn as it plays: in Firefox 158 on a desktop the same page's ended 140 ms past
+    // their time in its launcher and 0.1 ms past it once its game ran, or stayed late all through.
+    bool vi_late = false;
+
     bool vi_waits_end_late() {
-        static const bool late = []() {
+        [[maybe_unused]] static const bool measured = []() {
             uint32_t futex = 0;
             double shortest = 1e9;
             for (int i = 0; i < 3; i++) {
@@ -209,10 +214,40 @@ namespace {
                 shortest = std::min(shortest, emscripten_get_now() - start);
             }
 
-            return shortest > 4.0;
+            vi_late = shortest > 4.0;
+            return true;
         }();
 
-        return late;
+        return vi_late;
+    }
+
+    // A timed wait of the VI thread's that ended over_ms past its time: waits judged on time turn late once most of those
+    // in each of 10 seconds in a row ended more than 4 ms past their time, and stay late, as plume's timedWaitEnded()
+    // judges the present thread's.
+    void vi_wait_ended(double over_ms) {
+        static double second_start = 0.0;
+        static uint32_t second_waits = 0;
+        static uint32_t second_late_waits = 0;
+        static uint32_t late_seconds = 0;
+        const double now = emscripten_get_now();
+        if (second_start == 0.0) {
+            second_start = now;
+        }
+
+        second_waits++;
+        second_late_waits += (over_ms > 4.0) ? 1 : 0;
+        if ((now - second_start) < 1000.0) {
+            return;
+        }
+
+        late_seconds = ((second_late_waits * 2) > second_waits) ? (late_seconds + 1) : 0;
+        second_start = now;
+        second_waits = 0;
+        second_late_waits = 0;
+        if (late_seconds >= 10) {
+            vi_late = true;
+            fprintf(stderr, "ultramodern: most of the VI thread's timed waits ended over 4 ms late for 10 s, so VIs come on the browser's animation frames from now on\n");
+        }
     }
 
     // The browser's animation frames, counted on the page's thread: a futex woken at each. Only the count crosses
@@ -239,7 +274,17 @@ namespace {
 
     // Holds the VI thread until about the given time, ending on the first animation frame to come less than half a VI
     // before it, or at the time if none comes by then. False where a timed wait ends on time, and the caller sleeps itself.
+    // While timed waits are judged on time it first waits up to 100 us for a frame, no longer than the caller's own sleep
+    // would have taken, and judges that wait if it ended on its time (vi_wait_ended()): a frame's wake says nothing of
+    // the timer.
     bool vi_sleep_until(const std::chrono::high_resolution_clock::time_point& time_point) {
+        if (!vi_waits_end_late() && ((time_point - std::chrono::high_resolution_clock::now()) > std::chrono::microseconds(500))) {
+            const double start = emscripten_get_now();
+            if (emscripten_futex_wait(&vi_frame_serial, vi_frame_serial, 0.1) == -ETIMEDOUT) {
+                vi_wait_ended(emscripten_get_now() - start - 0.1);
+            }
+        }
+
         if (!vi_waits_end_late()) {
             return false;
         }
