@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cstdio>
 
 #include "ultramodern/ultramodern.hpp"
 
@@ -14,6 +15,19 @@ static PTR(OSThread)* queue_to_ptr(RDRAM_ARG PTR(PTR(OSThread)) queue) {
 void ultramodern::thread_queue_insert(RDRAM_ARG PTR(PTR(OSThread)) queue_, PTR(OSThread) toadd_) {
     PTR(OSThread)* cur = queue_to_ptr(PASS_RDRAM queue_);
     OSThread* toadd = TO_PTR(OSThread, toadd_); 
+    // A thread already in the queue isn't put in again: that links it to itself, and every later walk of the queue
+    // goes round for good, which hangs the game. osStartThread on a thread that isn't stopped does it without
+    // ULTRAMODERN_LIBULTRA_THREAD_STOP; anything else that does is said once, so it can be found.
+    for (PTR(OSThread) queued = *cur; queued != NULLPTR; queued = TO_PTR(OSThread, queued)->next) {
+        if (queued == toadd_) {
+            static bool reported = false;
+            if (!reported) {
+                reported = true;
+                fprintf(stderr, "ultramodern: thread %d was put in a queue it was in already\n", toadd->id);
+            }
+            return;
+        }
+    }
     debug_printf("[Thread Queue] Inserting thread %d into queue 0x%08X\n", toadd->id, (uintptr_t)queue_);
     while (*cur && TO_PTR(OSThread, *cur)->priority > toadd->priority) {
         cur = &TO_PTR(OSThread, *cur)->next;
