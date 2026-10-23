@@ -105,7 +105,7 @@ namespace recomp {
     /// 
     struct Configuration {
         Version project_version;
-        ultramodern::renderer::WindowHandle window_handle{};
+        ultramodern::renderer::WindowHandle window_handle;
         recomp::rsp::callbacks_t rsp_callbacks;
         ultramodern::renderer::callbacks_t renderer_callbacks;
         ultramodern::audio_callbacks_t audio_callbacks;
