@@ -220,6 +220,27 @@ static std::vector<uint8_t> read_file(const std::filesystem::path& path) {
 }
 
 bool write_file(const std::filesystem::path& path, const std::vector<uint8_t>& data) {
+#ifdef __EMSCRIPTEN__
+    // A page stores the ROM Load ROM picked on a thread of its own (RecompFrontend's picker), so the launcher's thread
+    // can check the stored ROMs while it is being written, and check_stored_rom deletes a stored ROM whose hash is wrong,
+    // a half-written one too: the rest went to a deleted file, select_rom still said Good, and Start Game then found no
+    // ROM. So it is written beside the stored one and renamed over it whole.
+    std::filesystem::path temp_path = path;
+    temp_path += ".temp";
+    {
+        std::ofstream out_file{ temp_path, std::ios::binary };
+        if (!out_file.good()) {
+            return false;
+        }
+        out_file.write(reinterpret_cast<const char*>(data.data()), data.size());
+        if (!out_file.good()) {
+            return false;
+        }
+    }
+    std::error_code ec;
+    std::filesystem::rename(temp_path, path, ec);
+    return !ec;
+#else
     std::ofstream out_file{ path, std::ios::binary };
 
     if (!out_file.good()) {
@@ -229,6 +250,7 @@ bool write_file(const std::filesystem::path& path, const std::vector<uint8_t>& d
     out_file.write(reinterpret_cast<const char*>(data.data()), data.size());
 
     return true;
+#endif
 }
 
 bool check_stored_rom(const recomp::GameEntry& game_entry) {
@@ -740,6 +762,12 @@ bool wait_for_game_started(uint8_t* rdram, recomp_context* context) {
             {
                 if (!recomp::load_stored_rom(current_game.value())) {
                     ultramodern::error_handling::message_box("Error opening stored ROM! Please restart this program.");
+#ifdef __EMSCRIPTEN__
+                    // The game went on with no ROM and a page trapped out of bounds on a worker, its last word, so it
+                    // goes back to the launcher instead, as when its mods don't load.
+                    game_status.store(GameStatus::None);
+                    return false;
+#endif
                 }
 
                 auto find_it = game_roms.find(current_game.value());
