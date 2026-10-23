@@ -35,6 +35,8 @@ extern "C" void osSpTaskStartGo_recomp(uint8_t* rdram, recomp_context* ctx) {
         dump_file.write(ram_unswapped.get(), ram_size);
         dump_frame = false;
     }
+    // Copied as it starts, where ultramodern runs an RSP task from a copy (its rsp.hpp)
+    ultramodern::rsp::task_submitted(rdram, ctx->r4);
     ultramodern::submit_rsp_task(rdram, ctx->r4);
 }
 

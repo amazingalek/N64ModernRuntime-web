@@ -6,6 +6,7 @@
 #include "rsp_vu.hpp"
 #include "recomp.h"
 #include "ultramodern/ultra64.h"
+#include "ultramodern/rsp.hpp"
 
 // TODO: Move these to recomp namespace?
 
@@ -98,8 +99,11 @@ static inline void dma_rdram_to_dmem(uint8_t* rdram, uint32_t dmem_addr, uint32_
     rd_len += 1; // Read length is inclusive
     dram_addr &= 0xFFFFF8;
     assert(dmem_addr + rd_len <= 0x1000);
+    // The running task's data as the game submitted it, where ultramodern runs the task from a copy (its rsp.hpp)
+    const ultramodern::rsp::SubmittedData& data = ultramodern::rsp::submitted_data;
     for (uint32_t i = 0; i < rd_len; i++) {
-        RSP_MEM_B(i, dmem_addr) = MEM_B(0, (int64_t)(int32_t)(dram_addr + i + 0x80000000));
+        const uint32_t data_offset = dram_addr + i - data.address;
+        RSP_MEM_B(i, dmem_addr) = data_offset < data.size ? data.bytes[data_offset ^ 3] : MEM_B(0, (int64_t)(int32_t)(dram_addr + i + 0x80000000));
     }
 }
 
@@ -107,8 +111,13 @@ static inline void dma_dmem_to_rdram(uint8_t* rdram, uint32_t dmem_addr, uint32_
     wr_len += 1; // Write length is inclusive
     dram_addr &= 0xFFFFF8;
     assert(dmem_addr + wr_len <= 0x1000);
+    const ultramodern::rsp::SubmittedData& data = ultramodern::rsp::submitted_data;
     for (uint32_t i = 0; i < wr_len; i++) {
         MEM_B(0, (int64_t)(int32_t)(dram_addr + i + 0x80000000)) = RSP_MEM_B(i, dmem_addr);
+        const uint32_t data_offset = dram_addr + i - data.address;
+        if (data_offset < data.size) {
+            data.bytes[data_offset ^ 3] = RSP_MEM_B(i, dmem_addr);
+        }
     }
 }
 
