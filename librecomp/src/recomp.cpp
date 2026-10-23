@@ -764,9 +764,13 @@ bool wait_for_game_started(uint8_t* rdram, recomp_context* context) {
                     ultramodern::error_handling::message_box("Error opening stored ROM! Please restart this program.");
 #ifdef __EMSCRIPTEN__
                     // The game went on with no ROM and a page trapped out of bounds on a worker, its last word, so it
-                    // goes back to the launcher instead, as when its mods don't load.
-                    game_status.store(GameStatus::None);
-                    return false;
+                    // goes back to the launcher instead, as when its mods don't load. Only with no ROM at all: a recomp
+                    // that keeps no stored ROM hands the runtime the ROM's bytes itself (set_rom_contents) before it
+                    // starts the game, finds no stored one every time, and goes on with the ROM it gave.
+                    if (!recomp::is_rom_loaded()) {
+                        game_status.store(GameStatus::None);
+                        return false;
+                    }
 #endif
                 }
 
